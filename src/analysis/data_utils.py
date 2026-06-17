@@ -26,14 +26,4 @@ def load_data(file_path: Path) -> list[dict]:
     if not data:
         raise ValueError(f"Dataset is empty: {file_path}")
 
-    required_keys = {
-        "future_supermag",
-        "past_supermag",
-        "coords_radians",
-        "future_dates",
-    }
-    missing = required_keys.difference(data[0].keys())
-    if missing:
-        raise KeyError(f"Missing required keys in first record: {sorted(missing)}")
-
     return data
