@@ -1,5 +1,5 @@
 [project]
-name = "dagger-harmonics"
+name = "dagger_harmonics"
 version = "0.1.0"
 description = "README.md"
 readme = "README.md"
@@ -14,16 +14,20 @@ maintainers = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "aacgmv2>=2.6",
+    "cartopy>=0.23",
     "matplotlib>=3.10.6",
     "numpy>=2.3.3",
     "pandas>=3.0.1",
+    "pydantic-settings>=2.14.1",
+    "python-dotenv>=1.2.2",
     "rich>=15.0.0",
     "scipy>=1.17.1",
     "torch-harmonics>=0.8.0",
 ]
 
 [project.scripts]
-dagger-harmonics = "dagger_harmonics:main"
+dagger-harmonics = "dagger_harmonics.main:main"
 
 [build-system]
 requires = ["uv_build"]
@@ -37,3 +41,11 @@ dev = [
 
 [tool.uv]
 link-mode = "copy"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra --strict-markers --import-mode=importlib"
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
