@@ -35,8 +35,8 @@ def main():
 
     supermag_df = future_supermag.get_df(index)
     print(supermag_df.head())
-    plot_supermag(supermag_df, feature="dbh")
-    plot_supermag_geo(supermag_df, feature="dbh")
+    # plot_supermag(supermag_df, feature="dbh")
+    # plot_supermag_geo(supermag_df, feature="dbh")
 
 
 def train_model():

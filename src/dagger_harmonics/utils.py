@@ -156,28 +156,68 @@ def plot_supermag(df: pd.DataFrame, feature: str = "dbh"):
     plt.show()
 
 
+# Column indices that should share an axes panel.
+_OMNI_GROUPS: list[tuple[int, ...]] = [(0, 1, 2), (3, 4, 5), (9, 10, 11)]
+
+
+def _omni_panels(n_cols: int) -> list[list[int]]:
+    """Return an ordered list of panels; each panel is a list of column indices."""
+    in_group: dict[int, tuple[int, ...]] = {}
+    for group in _OMNI_GROUPS:
+        for i in group:
+            if i < n_cols:
+                in_group[i] = tuple(j for j in group if j < n_cols)
+
+    panels: list[list[int]] = []
+    seen: set[tuple[int, ...]] = set()
+    for i in range(n_cols):
+        if i in in_group:
+            g = in_group[i]
+            if g not in seen:
+                seen.add(g)
+                panels.append(list(g))
+        else:
+            panels.append([i])
+    return panels
+
+
 def plot_omni(omni_data: pd.DataFrame):
     import matplotlib.pyplot as plt
+    import matplotlib.dates as mdates
 
     cols = [c for c in omni_data.columns if c != "date"]
+    _panels = _omni_panels(len(cols))
+    grouped = [p for p in _panels if len(p) > 1]
+    singles = [p for p in _panels if len(p) == 1]
+    panels = grouped + singles
 
-    # Grid 3 wide x 5 tall
     ncols = 3
-    nrows = 5
-    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 5, nrows * 3.5), sharex=True)
+    nrows = (len(panels) + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 5, nrows * 3), sharex=True)
     axes = axes.flatten()
 
-    for i, col in enumerate(cols[: nrows * ncols]):
-        ax = axes[i]
-        ax.plot(omni_data["date"], omni_data[col], label=col)
-        ax.set_xlabel("Date")
-        ax.set_ylabel(col)
-        ax.set_title(col)
-        ax.grid()
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
-    # Hide any remaining empty axes
-    for j in range(len(cols), nrows * ncols):
+    for ax_i, idx_list in enumerate(panels):
+        ax = axes[ax_i]
+        for color_i, col_i in enumerate(idx_list):
+            col = cols[col_i]
+            ax.plot(omni_data["date"], omni_data[col], label=col, color=colors[color_i])
+        if len(idx_list) > 1:
+            ax.legend(fontsize=7)
+        else:
+            ax.set_ylabel(cols[idx_list[0]])
+        ax.set_title(", ".join(cols[i] for i in idx_list), fontsize=9)
+        ax.grid(alpha=0.3)
+
+    for j in range(len(panels), len(axes)):
         axes[j].set_visible(False)
 
+    for ax in axes[: len(panels)]:
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+
+    date_str = pd.Timestamp(omni_data["date"].iloc[0]).strftime("%Y-%m-%d UTC")
+    fig.suptitle(f"OMNI — {date_str}", fontsize=13)
+    fig.autofmt_xdate(rotation=45, ha="right")
     fig.tight_layout()
     plt.show()
