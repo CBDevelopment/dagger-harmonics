@@ -24,10 +24,12 @@ dependencies = [
     "rich>=15.0.0",
     "scipy>=1.17.1",
     "torch-harmonics>=0.8.0",
+    "tqdm>=4.68.3",
 ]
 
 [project.scripts]
 dagger-harmonics = "dagger_harmonics.main:main"
+dagger-train = "dagger_harmonics.main:train_model"
 
 [build-system]
 requires = ["uv_build"]

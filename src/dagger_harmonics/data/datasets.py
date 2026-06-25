@@ -1,5 +1,6 @@
 from torch.utils.data import Dataset
 import numpy as np
+import pandas as pd
 
 from dagger_harmonics.config import settings
 from dagger_harmonics.utils import load_data
@@ -29,8 +30,9 @@ def get_omni_features() -> np.ndarray:
 
 
 class OMNIDataset(Dataset):
-    def __init__(self, data):
+    def __init__(self, data, dates):
         self.data = data
+        self.dates = dates
         self.features = get_omni_features()
         self.scalers = get_omni_scalers()
 
@@ -39,6 +41,17 @@ class OMNIDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.data[idx]
+
+    def get_dates(self, idx) -> np.ndarray:
+        """Return shape (N_records, 1) for a single named OMNI feature."""
+        return self.dates[idx]
+
+    def get_df(self, idx) -> pd.DataFrame:
+        """Return a DataFrame for a single record at index `idx`."""
+        record = self[idx]
+        df = pd.DataFrame(record, columns=self.features)
+        df["date"] = pd.to_datetime(self.get_dates(idx), unit="s", utc=True)
+        return df
 
     def get_column(self, feature: str) -> np.ndarray:
         """Return shape (N_records, T) for a single named OMNI feature."""
@@ -68,8 +81,9 @@ def get_supermag_features() -> np.ndarray:
 
 
 class SuperMAGDataset(Dataset):
-    def __init__(self, data):
+    def __init__(self, data, dates):
         self.data = data
+        self.dates = dates
         self.features = get_supermag_features()
         self.scalers = get_supermag_scalers()
 
@@ -78,6 +92,17 @@ class SuperMAGDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.data[idx][0]
+
+    def get_date(self, idx) -> np.ndarray:
+        """Return shape (N_records, 1) for a single named SuperMAG feature."""
+        return self.dates[idx][0][0]
+
+    def get_df(self, idx) -> pd.DataFrame:
+        """Return a DataFrame for a single record at index `idx`."""
+        record = self[idx]
+        df = pd.DataFrame(record, columns=self.features)
+        df["date"] = pd.to_datetime(self.get_date(idx), unit="s", utc=True)
+        return df
 
     def get_column(self, feature: str) -> np.ndarray:
         """Return shape (N_records, N_stations) for a single named SuperMAG feature."""
