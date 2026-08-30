@@ -157,20 +157,23 @@ name = "dagger-harmonics"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "aacgmv2" },
-    { name = "cartopy" },
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
-    { name = "rich" },
     { name = "scipy" },
     { name = "torch-harmonics" },
+    { name = "torchmetrics" },
     { name = "tqdm" },
 ]
 
 [package.dev-dependencies]
+analysis = [
+    { name = "aacgmv2" },
+    { name = "cartopy" },
+    { name = "rich" },
+]
 dev = [
     { name = "pytest" },
     { name = "ruff" },
@@ -178,20 +181,23 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aacgmv2", specifier = ">=2.6" },
-    { name = "cartopy", specifier = ">=0.23" },
     { name = "matplotlib", specifier = ">=3.10.6" },
     { name = "numpy", specifier = ">=2.3.3" },
     { name = "pandas", specifier = ">=3.0.1" },
     { name = "pydantic-settings", specifier = ">=2.14.1" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
-    { name = "rich", specifier = ">=15.0.0" },
     { name = "scipy", specifier = ">=1.17.1" },
     { name = "torch-harmonics", specifier = ">=0.8.0" },
+    { name = "torchmetrics", specifier = ">=1.9.0" },
     { name = "tqdm", specifier = ">=4.68.3" },
 ]
 
 [package.metadata.requires-dev]
+analysis = [
+    { name = "aacgmv2", specifier = ">=2.6" },
+    { name = "cartopy", specifier = ">=0.23" },
+    { name = "rich", specifier = ">=15.0.0" },
+]
 dev = [
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "ruff", specifier = ">=0.15.0" },
@@ -334,6 +340,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/07/18/43a5f24608d8c313dd189cf838c8e68d75b115567c6279de7796197cfb6a/kiwisolver-1.5.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:e7a116ae737f0000343218c4edf5bd45893bfeaff0993c0b215d7124c9f77646", size = 2394403, upload-time = "2026-03-09T13:15:31.517Z" },
     { url = "https://files.pythonhosted.org/packages/3b/b5/98222136d839b8afabcaa943b09bd05888c2d36355b7e448550211d1fca4/kiwisolver-1.5.0-cp314-cp314t-win_amd64.whl", hash = "sha256:1dd9b0b119a350976a6d781e7278ec7aca0b201e1a9e2d23d9804afecb6ca681", size = 79687, upload-time = "2026-03-09T13:15:33.204Z" },
     { url = "https://files.pythonhosted.org/packages/99/a2/ca7dc962848040befed12732dff6acae7fb3c4f6fc4272b3f6c9a30b8713/kiwisolver-1.5.0-cp314-cp314t-win_arm64.whl", hash = "sha256:58f812017cd2985c21fbffb4864d59174d4903dd66fa23815e74bbc7a0e2dd57", size = 70032, upload-time = "2026-03-09T13:15:34.411Z" },
+]
+
+[[package]]
+name = "lightning-utilities"
+version = "0.15.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f1/45/7fa8f56b17dc0f0a41ec70dd307ecd6787254483549843bef4c30ab5adce/lightning_utilities-0.15.3.tar.gz", hash = "sha256:792ae0204c79f6859721ac7f386c237a33b0ed06ba775009cb894e010a842033", size = 33553, upload-time = "2026-02-22T14:48:53.348Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/25/f4/ead6e0e37209b07c9baa3e984ccdb0348ca370b77cea3aaea8ddbb097e00/lightning_utilities-0.15.3-py3-none-any.whl", hash = "sha256:6c55f1bee70084a1cbeaa41ada96e4b3a0fea5909e844dd335bd80f5a73c5f91", size = 31906, upload-time = "2026-02-22T14:48:52.488Z" },
 ]
 
 [[package]]
@@ -1199,6 +1218,21 @@ dependencies = [
     { name = "torch" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9f/b5/fb47e55b935c868cce08cc5bb4912e665e5b3e438c76ba54ed3ab205cf77/torch_harmonics-0.8.0.tar.gz", hash = "sha256:b44340184416283a3636640a9050c2187515d6bd9858fa0421b048b66465f773", size = 5844331, upload-time = "2025-07-21T16:48:39.912Z" }
+
+[[package]]
+name = "torchmetrics"
+version = "1.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "lightning-utilities" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/81/34/39b8b749333db56c0585d7a11fa62a283c087bb1dfc897d69fb8cedbefb1/torchmetrics-1.9.0.tar.gz", hash = "sha256:a488609948600df52d3db4fcdab02e62aab2a85ef34da67037dc3e65b8512faa", size = 581765, upload-time = "2026-03-09T17:41:22.443Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c3/a2/c7f6ebf546f8f644edf0f999aa98ece106986a77a7b922316bf6414ff825/torchmetrics-1.9.0-py3-none-any.whl", hash = "sha256:bfdcbff3dd1d96b3374bb2496eb39f23c4b28b8a845b6a18c313688e0d2d9ca1", size = 983384, upload-time = "2026-03-09T17:41:19.756Z" },
+]
 
 [[package]]
 name = "tqdm"

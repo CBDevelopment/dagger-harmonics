@@ -4,12 +4,16 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torchmetrics import MeanAbsoluteError, MeanSquaredError
 from tqdm import tqdm
 
 from dagger_harmonics.config import settings
-from dagger_harmonics.data.datasets import OMNIDataset, SuperMAGDataset
+from dagger_harmonics.data.datasets import (
+    OMNIDataset,
+    SuperMAGDataset,
+    load_dagger_data,
+)
 from dagger_harmonics.models.recreation import DAGGER
-from dagger_harmonics.utils import load_data_df
 
 _PROJECT_ROOT = Path(__file__).parents[2]
 _DEFAULT_MODEL_PATH = _PROJECT_ROOT / "outputs" / "trained_models" / "dagger_model.pt"
@@ -31,65 +35,151 @@ def _prepare_omni(
 def _prepare_coords_and_target(
     record: np.ndarray,
     feature_names,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Extract station coordinates, dbH target, and a validity mask.
+    Extract station coordinates, per-component targets, and a validity mask.
 
     record        : (N, n_features) array
     feature_names : ordered sequence of column names
 
-    Returns mcolat_rad (N,), mlt_rad (N,), dbh (N,), valid (N,).
-    valid is True only where coords AND dbh are all finite.
+    Returns mcolat_rad (N,), mlt_rad (N,), dbe (N,), dbn (N,), valid (N,).
+    valid is True where coords are finite AND at least one of dbe/dbn is finite.
+    NaN component values are replaced with 0.0 so they contribute zero loss.
     """
     feats = list(feature_names)
     arr = np.asarray(record, dtype=np.float32)
 
     maglat = arr[:, feats.index("MAGLAT")]
     mlt = arr[:, feats.index("MLT")]
-    dbe = arr[:, feats.index("dbe_nez")]
-    dbn = arr[:, feats.index("dbn_nez")]
+    dbe_raw = arr[:, feats.index("dbe_nez")]
+    dbn_raw = arr[:, feats.index("dbn_nez")]
 
     mcolat_rad = np.radians(90.0 - maglat)
     mlt_rad = mlt * (np.pi / 12.0)
-    dbh = np.sqrt(dbe**2 + dbn**2)
 
-    valid = np.isfinite(mcolat_rad) & np.isfinite(mlt_rad) & np.isfinite(dbh)
+    coords_ok = np.isfinite(mcolat_rad) & np.isfinite(mlt_rad)
+    valid = coords_ok & (np.isfinite(dbe_raw) | np.isfinite(dbn_raw))
+
+    dbe = np.where(np.isfinite(dbe_raw), dbe_raw, 0.0).astype(np.float32)
+    dbn = np.where(np.isfinite(dbn_raw), dbn_raw, 0.0).astype(np.float32)
 
     return (
         torch.from_numpy(mcolat_rad),
         torch.from_numpy(mlt_rad),
-        torch.from_numpy(dbh),
+        torch.from_numpy(dbe),
+        torch.from_numpy(dbn),
         torch.from_numpy(valid),
     )
 
 
-def _eval_epoch(
+def _select_device(device: str | torch.device | None = None) -> torch.device:
+    """Resolve the compute device.
+
+    Pass an explicit device (e.g. "cuda", "cpu", a `torch.device`) to use it
+    as-is. Pass nothing (the default) to auto-detect: CUDA if available,
+    else CPU.
+    """
+    if device is not None:
+        return torch.device(device)
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _predict_and_target(
+    model: DAGGER,
+    omni: torch.Tensor,
+    mcolat_rad: torch.Tensor,
+    mlt_rad: torch.Tensor,
+    dbe: torch.Tensor,
+    dbn: torch.Tensor,
+    valid: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run the model forward restricted to valid stations, and build the matching
+    [dbe, dbn] target tensor. Shared by `_run_epoch`'s train and eval passes so the
+    prediction/target pairing is defined in exactly one place.
+
+    Returns pred, target: both (n_valid, 2).
+    """
+    pred = model(omni, mcolat_rad[valid].unsqueeze(0), mlt_rad[valid].unsqueeze(0))[0]
+    target = torch.stack([dbe[valid], dbn[valid]], dim=-1)
+    return pred, target
+
+
+def _run_epoch(
     model: DAGGER,
     indices,
     omni_ds,
     supermag_ds,
     omni_mean: np.ndarray,
     omni_std: np.ndarray,
-) -> float:
-    """Compute average MSE over a set of record indices without updating weights."""
-    model.eval()
-    total_loss = 0.0
+    optimizer: torch.optim.Optimizer | None = None,
+    progress_desc: str | None = None,
+    device: str | torch.device | None = None,
+) -> dict[str, float]:
+    """Run one pass over `indices`, reporting MAE/MSE/RMSE.
+
+    Pass `optimizer` to run a training pass: the model is put in train mode,
+    and each record's MAE loss is backpropagated and stepped. Omit it to run
+    a read-only validation pass under `torch.no_grad()`. Either way the
+    returned metrics are computed the same way, so training and validation
+    numbers are directly comparable.
+
+    `device` moves the model and every per-record tensor there before the
+    forward pass (default: CPU, matching the model's own default placement).
+    The SH basis in `DAGGER._sh_basis` is built fresh from `mcolat_rad`'s
+    device each call, so moving the coordinate tensors is enough to keep the
+    whole forward pass on one device.
+    """
+    device = torch.device(device) if device is not None else torch.device("cpu")
+    model.to(device)
+    is_training = optimizer is not None
+    model.train(is_training)
+
+    mae, mse, rmse = (
+        MeanAbsoluteError().to(device),
+        MeanSquaredError().to(device),
+        MeanSquaredError(squared=False).to(device),
+    )
     n_steps = 0
-    with torch.no_grad():
+
+    indices = (
+        tqdm(indices, desc=progress_desc, unit="rec") if progress_desc else indices
+    )
+    with torch.set_grad_enabled(is_training):
         for idx in indices:
-            omni = _prepare_omni(omni_ds[idx], omni_mean, omni_std).unsqueeze(0)
-            mcolat_rad, mlt_rad, dbh, valid = _prepare_coords_and_target(
-                supermag_ds[idx], supermag_ds.features
+            omni = (
+                _prepare_omni(omni_ds[idx], omni_mean, omni_std).unsqueeze(0).to(device)
+            )
+            mcolat_rad, mlt_rad, dbe, dbn, valid = (
+                t.to(device)
+                for t in _prepare_coords_and_target(
+                    supermag_ds[idx], supermag_ds.features
+                )
             )
             if not valid.any():
                 continue
-            pred = model(
-                omni, mcolat_rad[valid].unsqueeze(0), mlt_rad[valid].unsqueeze(0)
+            pred, target = _predict_and_target(
+                model, omni, mcolat_rad, mlt_rad, dbe, dbn, valid
             )
-            total_loss += F.mse_loss(pred[0], dbh[valid]).item()
+
+            if is_training:
+                loss = F.l1_loss(pred, target)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                pred, target = pred.detach(), target.detach()
+
+            mae.update(pred, target)
+            mse.update(pred, target)
+            rmse.update(pred, target)
             n_steps += 1
-    model.train()
-    return total_loss / n_steps if n_steps else 0.0
+
+    if not n_steps:
+        return {"mae": 0.0, "mse": 0.0, "rmse": 0.0}
+    return {
+        "mae": mae.compute().item(),
+        "mse": mse.compute().item(),
+        "rmse": rmse.compute().item(),
+    }
 
 
 def _check_early_stop(
@@ -111,30 +201,44 @@ def _check_early_stop(
 
 def train(
     n_epochs: int = 20,
-    lr: float = 1e-3,
+    lr: float = 5e-3,
+    weight_decay: float = 5e-5,
     max_records: int | None = None,
     patience: int = 5,
     val_fraction: float = 0.1,
     save_path: Path | str | None = None,
+    device: str | torch.device | None = None,
 ) -> DAGGER:
     """
     Train DAGGER on val_data_2010.p.
 
-    max_records  : cap dataset size (e.g. 2000 for a quick run).
-    patience     : early-stopping epochs without val-loss improvement (0 = disabled).
-    val_fraction : fraction of records held out for validation / early stopping.
-    save_path    : where to write the trained model weights; defaults to
-                   outputs/trained_models/dagger_model.pt at the project root.
+    Loss is Mean Absolute Error (L1), and validation is tracked/early-stopped on
+    MAE too, following Upendran et al. 2022 §3.4; MSE/RMSE are also reported
+    each epoch for comparison against the paper's Table 3.
+
+    lr, weight_decay : Adam hyperparameters; defaults are the paper's Table 2 values.
+    max_records      : cap dataset size (e.g. 2000 for a quick run).
+    patience         : early-stopping epochs without val-MAE improvement (0 = disabled).
+    val_fraction     : fraction of records held out for validation / early stopping.
+    save_path        : where to write the trained model weights; defaults to
+                       outputs/trained_models/dagger_model.pt at the project root.
+    device           : compute device ("cuda", "cpu", a `torch.device`, ...).
+                       Defaults to CUDA if available, else CPU. Note the training
+                       loop runs one record at a time (batch size 1), so a GPU
+                       mainly helps once records are batched — see README/CLAUDE.md.
     """
-    df = load_data_df(settings.DATA_PATH / "val_data_2010.p")
-    omni_ds = OMNIDataset(df["past_omni"], df["past_dates"])
-    supermag_ds = SuperMAGDataset(df["future_supermag"], df["future_dates"])
+    device = _select_device(device)
+    print(f"Training on device: {device}")
+
+    dagger_data = load_dagger_data(settings.DATA_PATH / "val_data_2010.p")
+    omni_ds = OMNIDataset(dagger_data, split="past")
+    supermag_ds = SuperMAGDataset(dagger_data, split="future")
 
     omni_mean = np.asarray(omni_ds.scalers["omni_mean"], dtype=np.float32)
     omni_std = np.asarray(omni_ds.scalers["omni_std"], dtype=np.float32)
 
-    model = DAGGER(input_size=len(omni_ds.features))
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    model = DAGGER(input_size=len(omni_ds.features)).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     n = min(len(omni_ds), max_records) if max_records else len(omni_ds)
     all_indices = np.arange(n)
@@ -142,8 +246,8 @@ def train(
     train_idx = all_indices[:split]
     val_idx = all_indices[split:]
 
-    train_losses: list[float] = []
-    val_losses: list[float] = []
+    train_history: list[dict[str, float]] = []
+    val_history: list[dict[str, float]] = []
 
     best_val = float("inf")
     no_improve = 0
@@ -151,46 +255,35 @@ def train(
 
     for epoch in range(1, n_epochs + 1):
         np.random.shuffle(train_idx)
-        total_loss = 0.0
-        n_steps = 0
-
-        bar = tqdm(train_idx, desc=f"Epoch {epoch}/{n_epochs}", unit="rec", leave=True)
-        for idx in bar:
-            omni = _prepare_omni(omni_ds[idx], omni_mean, omni_std).unsqueeze(0)
-            mcolat_rad, mlt_rad, dbh, valid = _prepare_coords_and_target(
-                supermag_ds[idx], supermag_ds.features
-            )
-            if not valid.any():
-                continue
-
-            pred = model(
-                omni, mcolat_rad[valid].unsqueeze(0), mlt_rad[valid].unsqueeze(0)
-            )
-            loss = F.mse_loss(pred[0], dbh[valid])
-
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            total_loss += loss.item()
-            n_steps += 1
-            bar.set_postfix(
-                loss=f"{loss.item():.4f}", avg=f"{total_loss / n_steps:.4f}"
-            )
-
-        train_loss = total_loss / max(n_steps, 1)
-        val_loss = _eval_epoch(
-            model, val_idx, omni_ds, supermag_ds, omni_mean, omni_std
+        train_metrics = _run_epoch(
+            model,
+            train_idx,
+            omni_ds,
+            supermag_ds,
+            omni_mean,
+            omni_std,
+            optimizer=optimizer,
+            progress_desc=f"Epoch {epoch}/{n_epochs}",
+            device=device,
         )
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
-        print(f"  val_loss={val_loss:.4f}")
+        val_metrics = _run_epoch(
+            model, val_idx, omni_ds, supermag_ds, omni_mean, omni_std, device=device
+        )
+
+        train_history.append(train_metrics)
+        val_history.append(val_metrics)
+        print(
+            f"  train_mae={train_metrics['mae']:.4f}  "
+            f"val_mae={val_metrics['mae']:.4f}  "
+            f"val_mse={val_metrics['mse']:.4f}  "
+            f"val_rmse={val_metrics['rmse']:.4f}"
+        )
 
         if patience:
             best_val, no_improve, stop = _check_early_stop(
-                val_loss, best_val, no_improve, patience
+                val_metrics["mae"], best_val, no_improve, patience
             )
-            if val_loss <= best_val:
+            if val_metrics["mae"] <= best_val:
                 best_state = copy.deepcopy(model.state_dict())
             if stop:
                 print(
@@ -207,20 +300,24 @@ def train(
     print(f"Model saved → {out_path}")
 
     # Plot loss curves
-    _plot_losses(train_losses, val_losses)
+    _plot_losses(train_history, val_history)
 
     return model
 
 
-def _plot_losses(train_losses: list[float], val_losses: list[float]) -> None:
+def _plot_losses(
+    train_history: list[dict[str, float]], val_history: list[dict[str, float]]
+) -> None:
     import matplotlib.pyplot as plt
 
-    epochs = range(1, len(train_losses) + 1)
+    epochs = range(1, len(train_history) + 1)
+
     _, ax = plt.subplots(figsize=(7, 4))
-    ax.plot(epochs, train_losses, label="train")
-    ax.plot(epochs, val_losses, label="val")
+    ax.plot(epochs, [m["mae"] for m in train_history], label="train MAE")
+    ax.plot(epochs, [m["mae"] for m in val_history], label="val MAE")
+    ax.plot(epochs, [m["rmse"] for m in val_history], label="val RMSE", linestyle="--")
     ax.set_xlabel("Epoch")
-    ax.set_ylabel("MSE loss")
+    ax.set_ylabel("Error (nT)")
     ax.set_title("DAGGER training loss")
     ax.legend()
     ax.grid(True, alpha=0.3)

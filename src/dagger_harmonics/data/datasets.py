@@ -1,40 +1,76 @@
+from dataclasses import dataclass
+from pathlib import Path
+
 from torch.utils.data import Dataset
 import numpy as np
 import pandas as pd
 
-from dagger_harmonics.config import settings
-from dagger_harmonics.utils import load_data
+from dagger_harmonics.utils import load_data, load_data_df
 
 
-def get_all_scalers() -> dict:
-    """Load scalers from the specified path and return as a dictionary."""
-    scalers = load_data(settings.DATA_PATH / "scalers.p")
-    return dict(scalers) if not isinstance(scalers, dict) else scalers
+@dataclass
+class DaggerData:
+    """Everything needed to build OMNI/SuperMAG datasets from one `.p` file.
+
+    Bundles the record dataframe with its sidecar features/scalers so callers
+    only ever need to point `load_dagger_data` at the main pickle.
+    """
+
+    df: pd.DataFrame
+    omni_features: np.ndarray
+    omni_scalers: dict
+    supermag_features: np.ndarray
+    supermag_scalers: dict
 
 
-def get_omni_scalers() -> dict:
-    scalers = get_all_scalers()
-    _mean, _std = scalers.get("omni", {})
+def _omni_scalers(scalers: dict) -> dict:
+    mean, std = scalers["omni"]
+    return {"omni_mean": np.asarray(mean), "omni_std": np.asarray(std)}
 
+
+def _supermag_scalers(scalers: dict) -> dict:
+    mean, std = scalers["supermag"]
+    dbe_mean, dbn_mean = mean
+    dbe_std, dbn_std = std
     return {
-        "omni_mean": _mean,  # means for all OMNI features
-        "omni_std": _std,  # stds for all OMNI features
+        "dbe_mean": dbe_mean,
+        "dbe_std": dbe_std,
+        "dbn_mean": dbn_mean,
+        "dbn_std": dbn_std,
     }
 
 
-def get_omni_features() -> np.ndarray:
-    """Load OMNI features and ensure an ndarray is returned."""
-    features = load_data(settings.DATA_PATH / "omni_features.p")
-    arr = np.asarray(features)
-    return arr
+def load_dagger_data(path: Path) -> DaggerData:
+    """Load a val_data_*.p file plus its sidecar features/scalers.
+
+    The sidecar files (`omni_features.p`, `supermag_features.p`, `scalers.p`)
+    are read from `path.parent` — just point this at the main pickle and
+    everything else is found alongside it.
+    """
+    data_dir = Path(path).parent
+    scalers = load_data(data_dir / "scalers.p")
+
+    return DaggerData(
+        df=load_data_df(path),
+        omni_features=np.asarray(load_data(data_dir / "omni_features.p")),
+        omni_scalers=_omni_scalers(scalers),
+        supermag_features=np.asarray(load_data(data_dir / "supermag_features.p")),
+        supermag_scalers=_supermag_scalers(scalers),
+    )
 
 
 class OMNIDataset(Dataset):
-    def __init__(self, data, dates):
-        self.data = data
-        self.dates = dates
-        self.features = get_omni_features()
-        self.scalers = get_omni_scalers()
+    """OMNI solar-wind driver series, one entry per record.
+
+    `split` selects which pickle column to read (`"past"` -> `past_omni`,
+    `"future"` -> `future_omni` if present).
+    """
+
+    def __init__(self, dagger_data: DaggerData, split: str = "past"):
+        self.data = dagger_data.df[f"{split}_omni"].reset_index(drop=True)
+        self.dates = dagger_data.df[f"{split}_dates"].reset_index(drop=True)
+        self.features = dagger_data.omni_features
+        self.scalers = dagger_data.omni_scalers
 
     def __len__(self):
         return len(self.data)
@@ -43,13 +79,12 @@ class OMNIDataset(Dataset):
         return self.data[idx]
 
     def get_dates(self, idx) -> np.ndarray:
-        """Return shape (N_records, 1) for a single named OMNI feature."""
+        """Return shape (T,) timestamps for record `idx`."""
         return self.dates[idx]
 
     def get_df(self, idx) -> pd.DataFrame:
         """Return a DataFrame for a single record at index `idx`."""
-        record = self[idx]
-        df = pd.DataFrame(record, columns=self.features)
+        df = pd.DataFrame(self[idx], columns=self.features)
         df["date"] = pd.to_datetime(self.get_dates(idx), unit="s", utc=True)
         return df
 
@@ -59,48 +94,36 @@ class OMNIDataset(Dataset):
         return np.stack([self[i] for i in range(len(self))])[:, :, idx]
 
 
-def get_supermag_scalers() -> dict:
-    scalers = get_all_scalers()
-    _mean, _std = scalers.get("supermag", {})
-
-    dbe_mean, dbn_mean = _mean
-    dbe_std, dbn_std = _std
-    return {
-        "dbe_mean": dbe_mean,
-        "dbe_std": dbe_std,
-        "dbn_mean": dbn_mean,
-        "dbn_std": dbn_std,
-    }
-
-
-def get_supermag_features() -> np.ndarray:
-    """Load SuperMAG features and ensure an ndarray is returned."""
-    features = load_data(settings.DATA_PATH / "supermag_features.p")
-    arr = np.asarray(features)
-    return arr
-
-
 class SuperMAGDataset(Dataset):
-    def __init__(self, data, dates):
-        self.data = data
-        self.dates = dates
-        self.features = get_supermag_features()
-        self.scalers = get_supermag_scalers()
+    """SuperMAG station arrays, one entry per record.
+
+    `split` selects which pickle column to read (`"future"` -> `future_supermag`,
+    `"past"` -> `past_supermag`). The `future_*` columns carry a single
+    timestep per record, so that leading axis is squeezed away; `past_*`
+    columns keep their full (T, N, 6) shape.
+    """
+
+    def __init__(self, dagger_data: DaggerData, split: str = "future"):
+        self.split = split
+        self.data = dagger_data.df[f"{split}_supermag"].reset_index(drop=True)
+        self.dates = dagger_data.df[f"{split}_dates"].reset_index(drop=True)
+        self.features = dagger_data.supermag_features
+        self.scalers = dagger_data.supermag_scalers
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
-        return self.data[idx][0]
+        record = self.data[idx]
+        return record[0] if self.split == "future" else record
 
     def get_date(self, idx) -> np.ndarray:
-        """Return shape (N_records, 1) for a single named SuperMAG feature."""
+        """Return the single timestamp for a `future`-split record `idx`."""
         return self.dates[idx][0][0]
 
     def get_df(self, idx) -> pd.DataFrame:
         """Return a DataFrame for a single record at index `idx`."""
-        record = self[idx]
-        df = pd.DataFrame(record, columns=self.features)
+        df = pd.DataFrame(self[idx], columns=self.features)
         df["date"] = pd.to_datetime(self.get_date(idx), unit="s", utc=True)
         return df
 
