@@ -157,14 +157,11 @@ name = "dagger-harmonics"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "aacgmv2" },
-    { name = "cartopy" },
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
-    { name = "rich" },
     { name = "scipy" },
     { name = "torch-harmonics" },
     { name = "torchmetrics" },
@@ -172,6 +169,11 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
+analysis = [
+    { name = "aacgmv2" },
+    { name = "cartopy" },
+    { name = "rich" },
+]
 dev = [
     { name = "pytest" },
     { name = "ruff" },
@@ -179,14 +181,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aacgmv2", specifier = ">=2.6" },
-    { name = "cartopy", specifier = ">=0.23" },
     { name = "matplotlib", specifier = ">=3.10.6" },
     { name = "numpy", specifier = ">=2.3.3" },
     { name = "pandas", specifier = ">=3.0.1" },
     { name = "pydantic-settings", specifier = ">=2.14.1" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
-    { name = "rich", specifier = ">=15.0.0" },
     { name = "scipy", specifier = ">=1.17.1" },
     { name = "torch-harmonics", specifier = ">=0.8.0" },
     { name = "torchmetrics", specifier = ">=1.9.0" },
@@ -194,6 +193,11 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+analysis = [
+    { name = "aacgmv2", specifier = ">=2.6" },
+    { name = "cartopy", specifier = ">=0.23" },
+    { name = "rich", specifier = ">=15.0.0" },
+]
 dev = [
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "ruff", specifier = ">=0.15.0" },

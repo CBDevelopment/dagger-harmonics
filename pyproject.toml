@@ -13,15 +13,18 @@ maintainers = [
     { name = "Cutter Beck", email = "cbeckdevelopment@gmail.com" }
 ]
 requires-python = ">=3.13"
+# Core deps: everything dagger_harmonics.train / .data / .models actually
+# import. Kept lean deliberately -- this is what a training pod installs by
+# default. Geographic-plotting-only deps (used solely by
+# utils.py::plot_supermag_geo, which lazy-imports them) live in the
+# `analysis` dependency group instead; pull them in with
+# `uv sync --group analysis` when you need that function.
 dependencies = [
-    "aacgmv2>=2.6",
-    "cartopy>=0.23",
     "matplotlib>=3.10.6",
     "numpy>=2.3.3",
     "pandas>=3.0.1",
     "pydantic-settings>=2.14.1",
     "python-dotenv>=1.2.2",
-    "rich>=15.0.0",
     "scipy>=1.17.1",
     "torch-harmonics>=0.8.0",
     "torchmetrics>=1.9.0",
@@ -40,6 +43,14 @@ build-backend = "uv_build"
 dev = [
     "pytest>=9.0.2",
     "ruff>=0.15.0",
+]
+# Geographic plotting (utils.py::plot_supermag_geo) -- not needed for
+# training. cartopy alone drags in shapely/pyproj/pyshp; opt in with
+# `uv sync --group analysis`.
+analysis = [
+    "aacgmv2>=2.6",
+    "cartopy>=0.23",
+    "rich>=15.0.0",
 ]
 
 [tool.uv]
