@@ -404,13 +404,13 @@ def train(
 
     model.load_state_dict(best_state)
     torch.save(model.state_dict(), out_path)  # final write, in case of ties above
-    print(f"Model saved → {out_path}")
-    print(f"History saved → {history_path}")
+    print(f"Model saved -> {out_path}")
+    print(f"History saved -> {history_path}")
 
     # Plot loss curves -- saved to disk (works headless) and shown if a
     # display is attached.
     _plot_losses(train_history, val_history, plot_path)
-    print(f"Loss plot saved → {plot_path}")
+    print(f"Loss plot saved -> {plot_path}")
 
     return model
 
