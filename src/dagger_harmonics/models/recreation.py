@@ -3,7 +3,7 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-from scipy.special import gammaln, lpmv
+from scipy.special import gammaln
 
 
 def _sh_norm(degree: int, abs_m: int) -> float:
@@ -56,6 +56,27 @@ class DAGGER(nn.Module):
             [_sh_norm(deg, abs(m)) for deg, m in lm_pairs], dtype=np.float64
         )[:, None]  # (n_coeffs, 1)
 
+        # Group mode indices by |m|: computing the associated Legendre
+        # function P_l^m(cos_theta) is a sequential recurrence over l for a
+        # fixed m, so modes sharing the same |m| (e.g. (l=5,m=-2) and
+        # (l=7,m=2)) are evaluated together in one recurrence in
+        # _sh_basis. Built once here (pure Python/numpy, independent of any
+        # station position) as (index, degree-offset) pairs so the per-call
+        # gather is one vectorized indexed assignment per group rather than
+        # a per-mode Python loop -- the latter turned into ~230 individual
+        # tiny GPU kernel launches per forward pass and was *slower* on GPU
+        # than the original scipy call it replaced.
+        abs_ms_int = np.abs(ms).astype(int)
+        self._m_groups: list[tuple[int, torch.Tensor, torch.Tensor]] = []
+        for m0 in range(0, lmax + 1):
+            idx = np.where(abs_ms_int == m0)[0]
+            if idx.size == 0:
+                continue
+            offsets = degs[idx].astype(int) - m0  # position within that group's cache
+            self._m_groups.append(
+                (m0, torch.from_numpy(idx), torch.from_numpy(offsets))
+            )
+
         self.gru = nn.GRU(input_size=input_size, hidden_size=8, batch_first=True)
         self.fc = nn.Sequential(
             nn.Linear(8, 16),
@@ -70,29 +91,68 @@ class DAGGER(nn.Module):
         """
         Evaluate complex SH basis at station positions. Non-trainable.
 
+        Pure-PyTorch tensor implementation of the associated-Legendre
+        recurrence (same algorithm and Condon-Shortley sign convention as
+        `scipy.special.lpmv`, verified against it in
+        tests/test_recreation.py), so the whole computation runs on
+        mcolat_rad's own device -- no CPU/numpy round trip. Modes are
+        evaluated in groups sharing the same |m| (see `_m_groups`), since the
+        recurrence over degree l is sequential for a fixed m; each group's
+        results are gathered into `plm` with one vectorized indexed
+        assignment (not a per-mode Python loop -- see `_m_groups`'s comment
+        for why that mattered).
+
         mcolat_rad: (batch, N) — magnetic co-latitude in radians
         mlt_rad:    (batch, N) — MLT azimuth in radians (MLT_hours * π/12)
 
         Returns Y_real, Y_imag: (batch, N, n_coeffs)
         """
         B, N = mcolat_rad.shape
-        cos_theta = np.cos(mcolat_rad.detach().cpu().numpy().ravel())[
-            None, :
-        ]  # (1, B*N)
-        phi = mlt_rad.detach().cpu().numpy().ravel()[None, :]  # (1, B*N)
-
-        # Broadcast (n_coeffs, 1) mode arrays against (1, B*N) station arrays.
-        plm = self._lm_norms * lpmv(
-            self._abs_ms, self._degs, cos_theta
-        )  # (n_coeffs, B*N)
-        angle = self._ms * phi  # (n_coeffs, B*N)
-        Y_real = (plm * np.cos(angle)).T.reshape(B, N, self.n_coeffs)
-        Y_imag = (plm * np.sin(angle)).T.reshape(B, N, self.n_coeffs)
-
         dev = mcolat_rad.device
-        Y_real_t = torch.from_numpy(Y_real).to(dev, dtype=torch.float32)
-        Y_imag_t = torch.from_numpy(Y_imag).to(dev, dtype=torch.float32)
-        return Y_real_t, Y_imag_t
+        dtype = mcolat_rad.dtype if mcolat_rad.is_floating_point() else torch.float32
+
+        cos_theta = torch.cos(mcolat_rad.reshape(-1).to(dtype))  # (B*N,)
+        phi = mlt_rad.reshape(-1).to(dtype)  # (B*N,)
+        somx2 = torch.sqrt((1 - cos_theta) * (1 + cos_theta))
+
+        plm = torch.empty(self.n_coeffs, cos_theta.shape[0], device=dev, dtype=dtype)
+        for m0, idx, offsets in self._m_groups:
+            idx = idx.to(dev)
+            offsets = offsets.to(dev)
+
+            # P_m0^m0(x), including the Condon-Shortley phase (-1)^m.
+            pmm = torch.ones_like(cos_theta)
+            fact = 1.0
+            for _ in range(m0):
+                pmm = pmm * (-fact) * somx2
+                fact += 2.0
+
+            cache = [pmm]
+            if m0 + 1 <= self.lmax:
+                cache.append(cos_theta * (2 * m0 + 1) * pmm)
+            for degree in range(m0 + 2, self.lmax + 1):
+                cache.append(
+                    (
+                        cos_theta * (2 * degree - 1) * cache[-1]
+                        - (degree + m0 - 1) * cache[-2]
+                    )
+                    / (degree - m0)
+                )
+
+            # One vectorized gather for the whole group instead of a
+            # per-mode assignment loop.
+            plm[idx] = torch.stack(cache, dim=0)[offsets]
+
+        norms = torch.as_tensor(
+            self._lm_norms.ravel(), device=dev, dtype=dtype
+        ).unsqueeze(1)
+        ms = torch.as_tensor(self._ms.ravel(), device=dev, dtype=dtype).unsqueeze(1)
+        plm = plm * norms  # (n_coeffs, B*N)
+        angle = ms * phi.unsqueeze(0)  # (n_coeffs, B*N)
+
+        Y_real = (plm * torch.cos(angle)).T.reshape(B, N, self.n_coeffs)
+        Y_imag = (plm * torch.sin(angle)).T.reshape(B, N, self.n_coeffs)
+        return Y_real.to(torch.float32), Y_imag.to(torch.float32)
 
     @staticmethod
     def _complex_contract(
