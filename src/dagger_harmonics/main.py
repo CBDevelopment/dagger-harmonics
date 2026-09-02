@@ -1,26 +1,28 @@
 import pandas as pd
 
-from dagger_harmonics.utils import (
-    load_data_df,
-    plot_supermag,
-    plot_supermag_geo,
-    plot_omni,
-)
 from dagger_harmonics.config import settings
 from dagger_harmonics.data.datasets import (
     OMNIDataset,
     SuperMAGDataset,
+    load_dagger_data,
 )
 from dagger_harmonics.train import train
+from dagger_harmonics.utils import plot_omni, plot_supermag
 
 
 def main():
-    df = load_data_df(settings.DATA_PATH / "val_data_2010.p")
+    """Inspect one record of val_data_2010.p: the OMNI driver window and the
+    SuperMAG station target it pairs with, using the same loader and dataset
+    classes the training pipeline itself uses
+    (dagger_harmonics.data.datasets.load_dagger_data).
+    """
+    dagger_data = load_dagger_data(settings.DATA_PATH / "val_data_2010.p")
 
-    past_omni = OMNIDataset(df["past_omni"], df["past_dates"])
-    # Bx, By, Bz are the GSM, or Geocentric Solar Magnetospheric coordinates
-    # Origin for GSM is center of the Earth, X-axis points from Earth to Sun, Z-axis is perpendicular to the Earth's magnetic dipole axis, and Y-axis completes the right-handed system.
-    future_supermag = SuperMAGDataset(df["future_supermag"], df["future_dates"])
+    past_omni = OMNIDataset(dagger_data, split="past")
+    # Bx, By, Bz are the GSM (Geocentric Solar Magnetospheric) components:
+    # X points from Earth to Sun, Z is perpendicular to Earth's magnetic
+    # dipole axis, Y completes the right-handed system.
+    future_supermag = SuperMAGDataset(dagger_data, split="future")
     # MAGLAT between 40.18 and 84.72, 175 stations in the northern hemisphere
 
     index = 0
@@ -35,15 +37,18 @@ def main():
 
     supermag_df = future_supermag.get_df(index)
     print(supermag_df.head())
-    # plot_supermag(supermag_df, feature="dbh")
-    # plot_supermag_geo(supermag_df, feature="dbh")
+    plot_supermag(supermag_df, feature="dbh")
+    # plot_supermag_geo(supermag_df, feature="dbh") also available (geographic
+    # projection instead of MLT/MCOLAT), but needs cartopy/aacgmv2 --
+    # `uv sync --group analysis` first.
 
 
 def train_model():
-    model = train(max_records=2000)
-    return model
+    """Entry point for the `dagger-train` console script -- trains on the
+    full dataset with train()'s own defaults (see dagger_harmonics.train.train
+    for the paper-matched hyperparameters and batch_size guidance)."""
+    return train()
 
 
 if __name__ == "__main__":
-    # train_model()
     main()
